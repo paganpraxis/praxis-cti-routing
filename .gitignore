@@ -1,0 +1,24 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Local credentials and model caches
+*.key
+*.pem
+.index_cache/
+CTI Routing
+
+# Raw external checkouts/downloads; retain derived, attributed catalog.
+data/raw/
+
+# Future confirmatory outputs may be large or sensitive. Add deliberately.
+runs/*/
+!runs/cticonnect_cskg_smoke/

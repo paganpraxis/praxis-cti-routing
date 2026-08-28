@@ -1,0 +1,29 @@
+{
+  "experiment_id": "PX-034",
+  "protocol_version": "0.1-pre-registration",
+  "seed": 34057,
+  "as_of": "2026-08-28T00:00:00-04:00",
+  "labels": ["decisive", "complementary", "conflicting", "stale", "absent"],
+  "other_policy": "taxonomy_coverage_only_exclude_from_classifier",
+  "detector_input": ["question", "task", "retrieved_evidence"],
+  "forbidden_detector_input": ["answer_options", "candidate_answer", "gold_answer", "gold_label"],
+  "split": {"train": 0.6, "development": 0.2, "heldout": 0.2, "stratify_by": ["task", "support_state"]},
+  "primary_metric": "macro_f1",
+  "routing_metric": "aurc",
+  "comparison_arms": ["closed_book", "vanilla_rag", "always_domain_specific", "llm_self_prediction", "structural_router", "oracle_state"],
+  "matched_coverages": [0.25, 0.5, 0.75, 1.0],
+  "domain_strategy_by_task": {
+    "entity_linking": "extract_then_retrieve",
+    "entity_attribution": "decompose_then_retrieve",
+    "multi_document_synthesis": "cskg_guided"
+  },
+  "gates": {
+    "A_other_share_max": null,
+    "B_macro_f1_above_majority": true,
+    "C_routed_aurc_beats_both_retrieval_baselines": true,
+    "D_harm_prevention_min": null,
+    "E_oracle_gap_recovery_min": 0.09,
+    "F_cost_below_llm_judge_at_equal_accuracy": true,
+    "S_no_invalid_or_unsupported_output_increase": true
+  }
+}
