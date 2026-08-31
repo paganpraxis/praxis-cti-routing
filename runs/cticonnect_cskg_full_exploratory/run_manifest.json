@@ -1,0 +1,43 @@
+{
+  "anchor_policy": "exploratory_first_gold_cluster_source",
+  "cticonnect": {
+    "actual_count": 1859,
+    "category_counts": {
+      "entity_attribution": 379,
+      "entity_linking": 1139,
+      "multi_doc_synthesis": 341
+    },
+    "manifest_count": 1859,
+    "manifest_sha256": "1c9e3577137333201640b8890221cfee11a64e0eedef4d4def9152c32ad19963",
+    "name": "CTIConnect",
+    "paper_release_count": 1860,
+    "paper_release_count_delta": -1,
+    "released": "2026-05-28",
+    "task_counts": {
+      "ata": 160,
+      "atd": 261,
+      "csc": 111,
+      "esd": 280,
+      "mla": 95,
+      "rcm": 290,
+      "tap": 135,
+      "vca": 219,
+      "wim": 308
+    },
+    "version": "v1.0.0"
+  },
+  "cticonnect_git_commit": "554797d69a51147f1f98fad7198cb2d2b183d0e9",
+  "elapsed_seconds": 0.8777878284454346,
+  "experiment_id": "PX-034",
+  "python": "3.9.6",
+  "rows": 341,
+  "started_unix": 1787934447.3275452,
+  "strategy": "cskg",
+  "tasks": [
+    "csc",
+    "mla",
+    "tap"
+  ],
+  "top_k": 10,
+  "transform_model": null
+}
