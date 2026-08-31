@@ -52,14 +52,25 @@ class OfficialTransformer:
 
 
 class ShippedCSKGRetriever:
-    """Query the release's precomputed CSKG entity vocabulary without an API."""
+    """Question-conditioned search over the shipped CSKG entity vocabulary."""
 
-    def __init__(self, repository: Path, anchor_by_query: dict[str, str], report_index: dict[str, dict[str, Any]]):
+    DEFAULT_QUESTION_WEIGHT = 0.35
+
+    def __init__(
+        self,
+        repository: Path,
+        anchor_by_query: dict[str, str],
+        report_index: dict[str, dict[str, Any]],
+        question_weight: float = DEFAULT_QUESTION_WEIGHT,
+    ):
+        if not 0.0 <= question_weight <= 1.0:
+            raise ValueError("question_weight must be between 0 and 1")
         vocab_rows = read_jsonl(repository / "cskg" / "per_doc_entities.jsonl")
         self.surfaces = {str(row["doc_id"]): list(row["entity_surfaces"]) for row in vocab_rows}
         self.index = EntityBM25(self.surfaces)
         self.anchor_by_query = anchor_by_query
         self.report_index = report_index
+        self.question_weight = question_weight
         self.current_query_id: str | None = None
 
     def set_query(self, query_id: str) -> None:
@@ -71,8 +82,28 @@ class ShippedCSKGRetriever:
         anchor = self.anchor_by_query[self.current_query_id]
         if anchor not in self.surfaces:
             raise ValueError(f"anchor {anchor} is absent from shipped CSKG")
+        excluded = {anchor}
+        candidate_count = max(0, len(self.surfaces) - len(excluded))
+        anchor_hits = self.index.search(self.surfaces[anchor], k=candidate_count, exclude=excluded)
+        question_hits = self.index.search([query], k=candidate_count, exclude=excluded)
+        anchor_scores = {doc_id: score for doc_id, score, _ in anchor_hits}
+        question_scores = {doc_id: score for doc_id, score, _ in question_hits}
+        anchor_max = max(anchor_scores.values(), default=1.0)
+        question_max = max(question_scores.values(), default=1.0)
+        matched_by_doc: dict[str, set[str]] = {}
+        for doc_id, _, matched in anchor_hits + question_hits:
+            matched_by_doc.setdefault(doc_id, set()).update(matched)
+        fused = []
+        for doc_id in anchor_scores.keys() | question_scores.keys():
+            score = (
+                (1.0 - self.question_weight) * anchor_scores.get(doc_id, 0.0) / anchor_max
+                + self.question_weight * question_scores.get(doc_id, 0.0) / question_max
+            )
+            if score > 0:
+                fused.append((doc_id, score, tuple(sorted(matched_by_doc[doc_id]))))
+
         result = []
-        for doc_id, score, matched in self.index.search(self.surfaces[anchor], k=k, exclude={anchor}):
+        for doc_id, score, matched in sorted(fused, key=lambda item: (-item[1], item[0]))[:k]:
             report = self.report_index.get(doc_id, {})
             result.append(
                 Hit(

@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from px034.cticonnect import build_detector_inputs
+from px034.cticonnect_execution import ShippedCSKGRetriever
 from px034.detector import CentroidDetector
+from px034.evaluation import evaluate_mds_retrieval
 from px034.features import extract_features
-from px034.metrics import aurc, classification_metrics, harm_prevention_rate, oracle_gap_recovery
+from px034.metrics import aurc, classification_metrics, feature_degeneracy, harm_prevention_rate, oracle_gap_recovery
 from px034.routing import route_for_state
 from px034.retrieval import EntityBM25, Hit, execute_trace
 from px034.schema import DetectorInput
@@ -137,6 +141,35 @@ class CTIConnectAdapterTests(unittest.TestCase):
 
 
 class RetrievalInstrumentationTests(unittest.TestCase):
+    def test_cskg_queries_sharing_anchor_produce_different_hit_lists(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "cskg").mkdir()
+            (root / "cskg" / "per_doc_entities.jsonl").write_text(
+                "\n".join(
+                    [
+                        '{"doc_id":"ANCHOR","entity_surfaces":["APT29","malware"]}',
+                        '{"doc_id":"COZY","entity_surfaces":["APT29","Cozy Bear","malware"]}',
+                        '{"doc_id":"WELLMESS","entity_surfaces":["APT29","WellMess","malware"]}',
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            retriever = ShippedCSKGRetriever(
+                root,
+                {"q1": "ANCHOR", "q2": "ANCHOR"},
+                {},
+            )
+            retriever.set_query("q1")
+            cozy = retriever.retrieve("Which report discusses Cozy Bear?", "csc", 2)
+            retriever.set_query("q2")
+            wellmess = retriever.retrieve("Which report discusses WellMess?", "csc", 2)
+            self.assertNotEqual(
+                [hit.source_id for hit in cozy],
+                [hit.source_id for hit in wellmess],
+            )
+
     def test_multi_query_trace_preserves_events_and_deduplicates_context(self) -> None:
         class FakeRetriever:
             def retrieve(self, query: str, task: str, k: int) -> list[Hit]:
@@ -172,11 +205,68 @@ class RetrievalInstrumentationTests(unittest.TestCase):
 
 
 class MetricAndRoutingTests(unittest.TestCase):
+    def test_mds_summary_reports_queries_and_cluster_bootstrap_unit(self) -> None:
+        catalog = [
+            {
+                "query_id": "csc-001",
+                "source": {"blog_ids": ["BLOG-A", "BLOG-B", "BLOG-C"]},
+            },
+            {
+                "query_id": "csc-002",
+                "source": {"blog_ids": ["BLOG-A", "BLOG-B", "BLOG-C"]},
+            },
+        ]
+        traces = [
+            {
+                "id": query_id,
+                "task": "csc",
+                "anchor_id": "BLOG-A",
+                "anchor_policy": "test",
+                "retrieved_context": [{"source_id": hit, "retrieval_score": score}],
+                "latency_ms": 1.0,
+            }
+            for query_id, hit, score in (("csc-001", "BLOG-B", 0.8), ("csc-002", "BLOG-C", 0.7))
+        ]
+        summary = evaluate_mds_retrieval(catalog, traces, bootstrap_samples=20, feature_distinct_floor=0.0)
+        self.assertEqual(summary["n_queries"], 2)
+        self.assertEqual(summary["n_source_clusters"], 1)
+        self.assertEqual(summary["bootstrap"]["unit"], "source_cluster")
+        metrics = summary["metrics_including_zero_hits"]["metrics"]
+        self.assertEqual(metrics["precision_at_rel"]["estimate"], 0.5)
+        self.assertEqual(metrics["success_at_1"]["estimate"], 1.0)
+        self.assertEqual(metrics["precision_at_10_ceiling"]["estimate"], 0.2)
+
+    def test_mds_summary_flags_and_excludes_zero_hit_queries(self) -> None:
+        catalog = [{"query_id": "csc-035", "source": {"blog_ids": ["BLOG-278", "BLOG-X"]}}]
+        traces = [
+            {
+                "id": "csc-035",
+                "task": "csc",
+                "anchor_id": "BLOG-278",
+                "anchor_policy": "test",
+                "retrieved_context": [],
+                "latency_ms": 1.0,
+            }
+        ]
+        summary = evaluate_mds_retrieval(catalog, traces, bootstrap_samples=20, feature_distinct_floor=0.0)
+        self.assertEqual(summary["zero_hit_queries"], ["csc-035"])
+        self.assertEqual(summary["zero_hit_rate"], 1.0)
+        self.assertEqual(summary["metrics_excluding_zero_hits"]["n_queries"], 0)
+
     def test_metrics(self) -> None:
         metrics = classification_metrics(["a", "a", "b", "b"], ["a", "b", "b", "b"])
         self.assertAlmostEqual(metrics["accuracy"], 0.75)
         self.assertLess(aurc([True, False, True], [0.9, 0.1, 0.8]), 0.5)
         self.assertAlmostEqual(oracle_gap_recovery(0.5, 0.7, 0.9), 0.5)
+        degeneracy = feature_degeneracy(
+            [
+                {"task": "csc", "features": {"x": 1.0}},
+                {"task": "csc", "features": {"x": 1.0}},
+                {"task": "csc", "features": {"x": 2.0}},
+            ]
+        )
+        self.assertEqual(degeneracy["csc"]["distinct_feature_vectors"], 2)
+        self.assertAlmostEqual(degeneracy["csc"]["distinct_feature_vector_rate"], 2 / 3)
 
     def test_harm_prevention(self) -> None:
         rows = [

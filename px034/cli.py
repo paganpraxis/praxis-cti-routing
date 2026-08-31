@@ -17,9 +17,10 @@ from .cticonnect_execution import (
     load_anchor_manifest,
 )
 from .detector import CentroidDetector
+from .evaluation import evaluate_mds_retrieval, render_mds_report
 from .features import extract_features
 from .io import read_jsonl, write_json, write_jsonl
-from .metrics import classification_metrics
+from .metrics import classification_metrics, feature_degeneracy
 from .routing import route_for_state
 from .retrieval import execute_trace
 from .schema import DetectorInput, SupportState
@@ -58,7 +59,8 @@ def run_baseline(args: argparse.Namespace) -> None:
     test_ids = [x for x in split_payload["splits"][args.partition] if x in labels]
     model = CentroidDetector.fit(features(train_ids), [labels[x] for x in train_ids])
     predictions = []
-    for query_id, row_features in zip(test_ids, features(test_ids)):
+    test_features = features(test_ids)
+    for query_id, row_features in zip(test_ids, test_features):
         prediction, confidence = model.predict_one(row_features)
         routing = route_for_state(prediction, detector_rows[query_id].task)
         predictions.append(
@@ -75,9 +77,24 @@ def run_baseline(args: argparse.Namespace) -> None:
         [row["gold_support_state"] for row in predictions],
         [row["predicted_support_state"] for row in predictions],
     )
+    degeneracy_rows = [
+        {"task": detector_rows[query_id].task, "features": row_features}
+        for query_id, row_features in zip(test_ids, test_features)
+    ]
+    degeneracy = feature_degeneracy(degeneracy_rows)
+    _enforce_feature_floor(degeneracy, args.feature_distinct_floor)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     write_jsonl(args.output_dir / "predictions.jsonl", predictions)
-    write_json(args.output_dir / "summary.json", {"partition": args.partition, "rows": len(predictions), "metrics": metrics})
+    write_json(
+        args.output_dir / "summary.json",
+        {
+            "partition": args.partition,
+            "rows": len(predictions),
+            "metrics": metrics,
+            "feature_degeneracy": degeneracy,
+            "feature_distinct_floor": args.feature_distinct_floor,
+        },
+    )
 
 
 def import_cticonnect(args: argparse.Namespace) -> None:
@@ -94,6 +111,20 @@ def make_detector_input(args: argparse.Namespace) -> None:
     rows, summary = build_detector_inputs(catalog, traces, release.report_index())
     write_jsonl(args.output, rows)
     write_json(args.summary, summary)
+
+
+def evaluate_mds(args: argparse.Namespace) -> None:
+    summary = evaluate_mds_retrieval(
+        read_jsonl(args.catalog),
+        read_jsonl(args.retrieval_traces),
+        bootstrap_samples=args.bootstrap_samples,
+        seed=args.seed,
+        feature_distinct_floor=args.feature_distinct_floor,
+    )
+    manifest = json.loads(args.run_manifest.read_text(encoding="utf-8"))
+    write_json(args.summary, summary)
+    args.report.parent.mkdir(parents=True, exist_ok=True)
+    args.report.write_text(render_mds_report(summary, manifest), encoding="utf-8")
 
 
 def run_retrieval(args: argparse.Namespace) -> None:
@@ -118,7 +149,12 @@ def run_retrieval(args: argparse.Namespace) -> None:
             anchor_policy = "exploratory_first_gold_cluster_source"
         else:
             raise ValueError("CSKG requires --anchor-manifest; use --exploratory-first-source-anchor only for non-confirmatory work")
-        retriever = ShippedCSKGRetriever(args.cticonnect_root, anchors, release.report_index())
+        retriever = ShippedCSKGRetriever(
+            args.cticonnect_root,
+            anchors,
+            release.report_index(),
+            question_weight=args.cskg_question_weight,
+        )
         expected = {"csc", "tap", "mla"}
     else:
         retriever = OfficialKBRetriever(args.cticonnect_root, args.cache_dir)
@@ -140,8 +176,25 @@ def run_retrieval(args: argparse.Namespace) -> None:
         if args.strategy == "cskg":
             trace["anchor_id"] = anchors[str(row["query_id"])]
             trace["anchor_policy"] = anchor_policy
-            trace["transform"] = {"kind": "shipped_cskg_anchor_entity_vocab", "llm_calls": 0}
+            trace["transform"] = {
+                "kind": "question_anchor_fusion_over_shipped_cskg_entity_vocab",
+                "question_weight": args.cskg_question_weight,
+                "anchor_weight": 1.0 - args.cskg_question_weight,
+                "llm_calls": 0,
+            }
         traces.append(trace)
+    degeneracy_rows = [
+        {
+            "task": trace["task"],
+            "features": [
+                [hit["source_id"], hit["retrieval_score"]]
+                for hit in trace["retrieved_context"]
+            ],
+        }
+        for trace in traces
+    ]
+    degeneracy = feature_degeneracy(degeneracy_rows)
+    _enforce_feature_floor(degeneracy, args.feature_distinct_floor)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     write_jsonl(args.output_dir / "retrieval.jsonl", traces)
     manifest = {
@@ -156,6 +209,16 @@ def run_retrieval(args: argparse.Namespace) -> None:
         "cticonnect_git_commit": _git_head(args.cticonnect_root),
         "transform_model": args.transform_model,
         "anchor_policy": anchor_policy,
+        "cskg_fusion": (
+            {
+                "question_weight": args.cskg_question_weight,
+                "anchor_weight": 1.0 - args.cskg_question_weight,
+            }
+            if args.strategy == "cskg"
+            else None
+        ),
+        "feature_degeneracy": degeneracy,
+        "feature_distinct_floor": args.feature_distinct_floor,
         "python": platform.python_version(),
     }
     write_json(args.output_dir / "run_manifest.json", manifest)
@@ -181,6 +244,16 @@ def build_parser() -> argparse.ArgumentParser:
     detector_input.add_argument("--summary", type=Path, required=True)
     detector_input.add_argument("--skip-hash-check", action="store_true")
     detector_input.set_defaults(func=make_detector_input)
+    evaluator = subparsers.add_parser("evaluate-mds")
+    evaluator.add_argument("--catalog", type=Path, required=True)
+    evaluator.add_argument("--retrieval-traces", type=Path, required=True)
+    evaluator.add_argument("--run-manifest", type=Path, required=True)
+    evaluator.add_argument("--summary", type=Path, required=True)
+    evaluator.add_argument("--report", type=Path, required=True)
+    evaluator.add_argument("--bootstrap-samples", type=int, default=2000)
+    evaluator.add_argument("--seed", type=int, default=34057)
+    evaluator.add_argument("--feature-distinct-floor", type=float, default=0.90)
+    evaluator.set_defaults(func=evaluate_mds)
     retrieval = subparsers.add_parser("run-retrieval")
     retrieval.add_argument("--cticonnect-root", type=Path, required=True)
     retrieval.add_argument("--strategy", choices=("vanilla", "etr", "dtr", "cskg"), required=True)
@@ -191,6 +264,8 @@ def build_parser() -> argparse.ArgumentParser:
     retrieval.add_argument("--transform-model")
     retrieval.add_argument("--anchor-manifest", type=Path)
     retrieval.add_argument("--exploratory-first-source-anchor", action="store_true")
+    retrieval.add_argument("--cskg-question-weight", type=float, default=ShippedCSKGRetriever.DEFAULT_QUESTION_WEIGHT)
+    retrieval.add_argument("--feature-distinct-floor", type=float, default=0.90)
     retrieval.add_argument("--output-dir", type=Path, required=True)
     retrieval.add_argument("--skip-hash-check", action="store_true")
     retrieval.set_defaults(func=run_retrieval)
@@ -201,6 +276,7 @@ def build_parser() -> argparse.ArgumentParser:
     baseline.add_argument("--partition", choices=("development", "heldout"), default="development")
     baseline.add_argument("--as-of", required=True, help="Frozen ISO-8601 feature reference time")
     baseline.add_argument("--output-dir", type=Path, required=True)
+    baseline.add_argument("--feature-distinct-floor", type=float, default=0.90)
     baseline.set_defaults(func=run_baseline)
     return parser
 
@@ -219,6 +295,18 @@ def _git_head(root: Path) -> str | None:
         ref = root / ".git" / value[5:]
         return ref.read_text(encoding="utf-8").strip() if ref.exists() else None
     return value
+
+
+def _enforce_feature_floor(summary: dict[str, dict[str, float | int]], floor: float) -> None:
+    if not 0.0 <= floor <= 1.0:
+        raise ValueError("feature distinct floor must be between 0 and 1")
+    failed = {
+        task: values["distinct_feature_vector_rate"]
+        for task, values in summary.items()
+        if task != "overall" and float(values["distinct_feature_vector_rate"]) < floor
+    }
+    if failed:
+        raise ValueError(f"feature degeneracy below declared floor {floor}: {failed}")
 
 
 if __name__ == "__main__":

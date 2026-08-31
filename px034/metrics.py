@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import json
 from typing import Iterable
 
 
@@ -61,3 +62,29 @@ def harm_prevention_rate(rows: Iterable[dict[str, object]]) -> float | None:
         return None
     prevented = sum(str(row["route"]) != "vanilla_rag" for row in harmful)
     return prevented / len(harmful)
+
+
+def feature_degeneracy(
+    rows: Iterable[dict[str, object]],
+    *,
+    task_key: str = "task",
+    vector_key: str = "features",
+) -> dict[str, dict[str, float | int]]:
+    """Count distinct serialized feature vectors overall and per task."""
+    grouped: dict[str, list[str]] = {}
+    all_vectors: list[str] = []
+    for row in rows:
+        vector = json.dumps(row[vector_key], sort_keys=True, separators=(",", ":"))
+        grouped.setdefault(str(row[task_key]), []).append(vector)
+        all_vectors.append(vector)
+
+    def summarize(values: list[str]) -> dict[str, float | int]:
+        distinct = len(set(values))
+        count = len(values)
+        return {
+            "rows": count,
+            "distinct_feature_vectors": distinct,
+            "distinct_feature_vector_rate": distinct / count if count else 0.0,
+        }
+
+    return {"overall": summarize(all_vectors), **{task: summarize(grouped[task]) for task in sorted(grouped)}}

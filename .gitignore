@@ -22,3 +22,4 @@ data/raw/
 # Future confirmatory outputs may be large or sensitive. Add deliberately.
 runs/*/
 !runs/cticonnect_cskg_smoke/
+!runs/cticonnect_cskg_question_conditioned_exploratory_v2/

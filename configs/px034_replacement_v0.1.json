@@ -10,6 +10,8 @@
   "split": {"train": 0.6, "development": 0.2, "heldout": 0.2, "stratify_by": ["task", "support_state"]},
   "primary_metric": "macro_f1",
   "routing_metric": "aurc",
+  "feature_distinct_floor": 0.90,
+  "cskg_question_anchor_fusion": {"question_weight": 0.35, "anchor_weight": 0.65},
   "comparison_arms": ["closed_book", "vanilla_rag", "always_domain_specific", "llm_self_prediction", "structural_router", "oracle_state"],
   "matched_coverages": [0.25, 0.5, 0.75, 1.0],
   "domain_strategy_by_task": {
@@ -20,9 +22,11 @@
   "gates": {
     "A_other_share_max": null,
     "B_macro_f1_above_majority": true,
-    "C_routed_aurc_beats_both_retrieval_baselines": true,
+    "C_abstention_policy_aurc_beats_both_retrieval_baselines": true,
+    "C_justification": "The frozen route_for_state policy never selects vanilla_rag; Gate C therefore tests selective abstention versus the retrieval baselines, not routing among retrieval strategies.",
     "D_harm_prevention_min": null,
-    "E_oracle_gap_recovery_min": 0.09,
+    "E_oracle_gap_recovery_min": 0.375,
+    "E_justification": "The proposal requires recovery exceeding the published +9-point pipeline gain out of the +24-point oracle opportunity: 9/24 = 0.375 of the oracle gap.",
     "F_cost_below_llm_judge_at_equal_accuracy": true,
     "S_no_invalid_or_unsupported_output_increase": true
   }

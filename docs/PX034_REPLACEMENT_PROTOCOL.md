@@ -48,12 +48,14 @@ All answer-generation prompts, retrieval depth, evaluator versions, decoding set
 
 ## Confirmatory metrics
 
-- Detection: macro-F1 (primary), accuracy, per-class precision/recall/F1, confusion matrix, bootstrap confidence intervals. Compare with majority class and LLM self-prediction.
+- Detection: macro-F1 (primary), accuracy, per-class precision/recall/F1, confusion matrix, and bootstrap confidence intervals. Every confidence interval resamples source clusters, never individual queries. Report both `n_queries` and `n_source_clusters` overall and per task.
 - Routing: AURC (primary), risk at 25/50/75/100% matched coverage, selective accuracy, and abstention rate by task.
 - Harm: among cases where closed-book is correct and vanilla RAG is wrong, the fraction diverted from vanilla RAG; also report beneficial-retrieval misroutes.
 - Oracle recovery: `(router - vanilla) / (oracle - vanilla)` for expected-behavior adherence and answer score.
 - Safety: invalid and unsupported claim rates.
 - Efficiency: detector latency, tokens, and estimated cost per query at equal detector accuracy.
+
+For MDS retrieval diagnostics, report precision@|rel| and success@1/3/5/10. Raw precision@10 may be retained only beside its attainable ceiling (0.20 for three-report gold clusters after excluding the anchor; 0.10 for two-report clusters). Report metrics both including and excluding zero-hit packets. A packet made empty by the BM25 `score > 0` filter is `absent` by construction of that filter, not by an observed evidence state, and must be flagged as such to annotators.
 
 All metrics are reported overall, by CTIConnect task, model tier, model family, support state, and temporal half. Small cells receive intervals and are not used for positive claims.
 
@@ -70,7 +72,7 @@ All metrics are reported overall, by CTIConnect task, model tier, model family, 
 
 The config currently leaves Gate A and Gate D thresholds null. That is deliberate: inventing them now would not make them principled. Set them from the blinded development/pilot procedure, record their justification, then hash the protocol, config, split manifest, prompts, label guide, and evaluator versions. The held-out runner should refuse to run unless the supplied freeze hash matches.
 
-Gate B is the load-bearing stop: option-blind macro-F1 must exceed the majority baseline in both model families. Gate C requires routed AURC to beat vanilla RAG and always-domain-specific in both tiers. Gate S blocks any positive conclusion if routing increases invalid or unsupported output rate.
+Gate B is the load-bearing stop: option-blind macro-F1 must exceed the majority baseline in both model families. Because the frozen `route_for_state` policy does not select vanilla RAG, Gate C is specifically an abstention-policy claim: its selective AURC must beat vanilla RAG and always-domain-specific in both tiers. It is not evidence that the policy routes among retrieval strategies. Gate E requires recovery of more than 0.375 of the oracle gap, because the published pipeline gain is +9 points out of a +24-point oracle opportunity (`9 / 24 = 0.375`). Gate S blocks any positive conclusion if routing increases invalid or unsupported output rate.
 
 ## Commands
 
