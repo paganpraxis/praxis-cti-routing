@@ -41,7 +41,7 @@ The maximum `other` share and minimum per-class count remain TBD until a blinded
 2. Vanilla RAG with one fixed retrieval configuration.
 3. Always domain-specific: EtR for entity linking, DtR for entity attribution, CSKG-guided for multi-document synthesis.
 4. LLM self-prediction followed by state-conditioned generation.
-5. Structural router followed by task/state action or abstention.
+5. Structural abstention policy: apply the frozen task-specific retrieval action for decisive/complementary predictions, use closed-book for absent predictions, and abstain for conflicting/stale/other predictions. This arm tests abstention, not retrieval-strategy selection.
 6. Oracle state, reported only as an upper bound.
 
 All answer-generation prompts, retrieval depth, evaluator versions, decoding settings, and model revisions must be identical where the arm definition permits.
@@ -66,7 +66,7 @@ All metrics are reported overall, by CTIConnect task, model tier, model family, 
 - Remove source/entity agreement.
 - Remove temporal features.
 - Remove textual overlap/conflict indicators.
-- Disable abstention while keeping route selection.
+- Disable abstention while keeping the frozen task-specific action, isolating the value of state-conditioned abstention.
 
 ## Gates before held-out access
 
@@ -109,3 +109,5 @@ The adapter validates every official task file against `data/manifest.json`, che
 The official v1.0.0 manifest released 2026-05-28 is internally consistent at 1,859 rows: 1,139 entity-linking, 379 entity-attribution, and 341 synthesis. The paper and project page state 1,860; the released VCA file contains 219 rows rather than the stated 220. PX-034 records this discrepancy and uses the hash-verified official release as the executable substrate unless an updated version is frozen later.
 
 The release contains a complete precomputed 321-report CSKG (`cskg/per_doc_entities.jsonl`) but no `baselines/cskg_guided/run.py`, despite its package documentation referencing one. Its public MDS records also provide the full gold report cluster but no explicit anchor field. PX-034 queries the shipped entity vocabulary with BM25Okapi-equivalent scoring and refuses confirmatory MDS execution without a separate anchor manifest.
+
+Before detector construction, publication dates are normalized using only `%B %d, %Y`, `%b %d, %Y`, `%Y-%m-%d`, `%Y-%m`, and `%Y`. Month-only and year-only values use the first representable day produced by the declared parser; the original value remains in `published_at_raw`. Blank values are audited as null. Unrecognized nonblank values remain visible as raw strings, and detector-input construction fails if their rate exceeds the configured threshold (`0.0` for v3).

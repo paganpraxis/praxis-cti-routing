@@ -54,7 +54,7 @@ class OfficialTransformer:
 class ShippedCSKGRetriever:
     """Question-conditioned search over the shipped CSKG entity vocabulary."""
 
-    DEFAULT_QUESTION_WEIGHT = 0.35
+    DEFAULT_QUESTION_WEIGHT = 0.10
 
     def __init__(
         self,

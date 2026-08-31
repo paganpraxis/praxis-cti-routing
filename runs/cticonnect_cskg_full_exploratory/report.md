@@ -1,5 +1,7 @@
 # PX-034 full CTIConnect CSKG exploratory run
 
+> **Superseded.** This anchor-only result is retained for provenance. Use the [question-conditioned v2 run](../cticonnect_cskg_question_conditioned_exploratory_v2/report.md) and consult the repository [CHANGELOG](../../CHANGELOG.md) for corrected numbers.
+
 Status: **execution pass; exploratory retrieval result only**
 
 This run executed the shipped CTIConnect CSKG entity index over all 341 multi-document synthesis queries at top-k 10. Because CTIConnect v1.0.0 does not expose an independent anchor field, the run used the first member of each gold `blog_ids` cluster as the anchor. This policy is recorded as `exploratory_first_gold_cluster_source` and is not valid for confirmatory claims.

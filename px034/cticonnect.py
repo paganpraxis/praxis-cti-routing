@@ -5,6 +5,7 @@ import json
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -29,6 +30,7 @@ CTI_ENTITY = re.compile(
     r"\b(?:CVE-\d{4}-\d+|CWE-\d+|CAPEC-\d+|T\d{4}(?:\.\d{3})?|G\d{4}|S\d{4}|BLOG-\d+)\b",
     re.IGNORECASE,
 )
+DATE_FORMAT_ALLOWLIST = ("%B %d, %Y", "%b %d, %Y", "%Y-%m-%d", "%Y-%m", "%Y")
 
 
 @dataclass(frozen=True)
@@ -119,8 +121,11 @@ def build_detector_inputs(
     catalog_rows: Iterable[dict[str, Any]],
     retrieval_rows: Iterable[dict[str, Any]],
     report_index: dict[str, dict[str, Any]] | None = None,
+    dates_unparsed_rate_max: float = 0.0,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Join retrieval traces to public questions without exposing catalog gold."""
+    if not 0.0 <= dates_unparsed_rate_max <= 1.0:
+        raise ValueError("dates_unparsed_rate_max must be between 0 and 1")
     public = {
         str(row["query_id"]): {
             "query_id": str(row["query_id"]),
@@ -132,6 +137,7 @@ def build_detector_inputs(
     output = []
     seen: set[str] = set()
     missing_queries = []
+    date_counts: Counter[str] = Counter()
     for trace in retrieval_rows:
         query_id = str(trace.get("query_id", trace.get("id", "")))
         if query_id not in public:
@@ -143,16 +149,22 @@ def build_detector_inputs(
         contexts = trace.get("retrieved_context", trace.get("evidence"))
         if contexts is None:
             raise ValueError(f"retrieval trace {query_id} has no retrieved_context/evidence")
-        evidence = [
-            _normalize_context({**item, "retrieved_at": item.get("retrieved_at", trace.get("retrieved_at"))}, report_index or {})
-            for item in contexts
-        ]
+        evidence = []
+        for item in contexts:
+            normalized, date_status = _normalize_context(
+                {**item, "retrieved_at": item.get("retrieved_at", trace.get("retrieved_at"))},
+                report_index or {},
+            )
+            evidence.append(normalized)
+            date_counts[date_status] += 1
         row = {**public[query_id], "evidence": evidence}
         DetectorInput.from_dict(row)
         output.append(row)
     missing = sorted(set(public) - seen)
     unknown = sorted(set(missing_queries))
-    return output, {
+    date_total = sum(date_counts.values())
+    dates_unparsed_rate = date_counts["unparsed"] / date_total if date_total else 0.0
+    summary = {
         "catalog_queries": len(public),
         "retrieval_traces": len(seen),
         "detector_inputs": len(output),
@@ -162,24 +174,58 @@ def build_detector_inputs(
         "unknown_retrieval_query_count": len(unknown),
         "unknown_retrieval_queries": unknown[:100],
         "unknown_retrieval_queries_truncated": len(unknown) > 100,
+        "dates_iso": date_counts["iso"],
+        "dates_normalized": date_counts["normalized"],
+        "dates_unparsed": date_counts["unparsed"],
+        "dates_null": date_counts["null"],
+        "dates_unparsed_rate": dates_unparsed_rate,
+        "dates_unparsed_rate_max": dates_unparsed_rate_max,
+        "date_format_allowlist": list(DATE_FORMAT_ALLOWLIST),
     }
+    if dates_unparsed_rate > dates_unparsed_rate_max:
+        raise ValueError(
+            f"date unparsed rate {dates_unparsed_rate:.6f} exceeds declared threshold {dates_unparsed_rate_max:.6f}"
+        )
+    return output, summary
 
 
-def _normalize_context(value: dict[str, Any], report_index: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _normalize_context(
+    value: dict[str, Any], report_index: dict[str, dict[str, Any]]
+) -> tuple[dict[str, Any], str]:
     source_id = str(value.get("source_id", value.get("doc_id", value.get("id", ""))))
     base = report_index.get(source_id, {})
     text = value.get("text", value.get("contents", value.get("preprocessed", base.get("text", ""))))
+    published_at_raw = value.get("published_at", value.get("publish_date", base.get("published_at")))
+    published_at, date_status = _normalize_published_at(published_at_raw)
     result = {
         "source_id": source_id,
         "title": str(value.get("title", base.get("title", ""))),
         "source_type": str(value.get("source_type", base.get("source_type", "unknown"))),
         "text": str(text),
-        "published_at": value.get("published_at", value.get("publish_date", base.get("published_at"))),
+        "published_at": published_at,
+        "published_at_raw": published_at_raw,
         "retrieved_at": value.get("retrieved_at"),
         "retrieval_score": value.get("retrieval_score", value.get("score")),
         "canonical_entities": sorted(set(str(x).upper() for x in value.get("canonical_entities", CTI_ENTITY.findall(str(text))))),
     }
-    return result
+    return result, date_status
+
+
+def _normalize_published_at(value: Any) -> tuple[str | None, str]:
+    if value is None or not str(value).strip():
+        return None, "null"
+    raw = str(value).strip()
+    try:
+        datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return raw, "iso"
+    except ValueError:
+        pass
+    for date_format in DATE_FORMAT_ALLOWLIST:
+        try:
+            return datetime.strptime(raw, date_format).date().isoformat(), "normalized"
+        except ValueError:
+            continue
+    return raw, "unparsed"
 
 
 def _validate_qa(row: dict[str, Any], task: str, spec: dict[str, Any]) -> None:

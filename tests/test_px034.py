@@ -139,6 +139,45 @@ class CTIConnectAdapterTests(unittest.TestCase):
         self.assertEqual(rows, [])
         self.assertEqual(summary["unknown_retrieval_queries"], ["unknown"])
 
+    def test_detector_input_normalizes_non_iso_date_before_feature_extraction(self) -> None:
+        catalog = [
+            {
+                "query_id": "csc-001",
+                "question": "When was this published?",
+                "task": "csc",
+                "category": "multi_doc_synthesis",
+            }
+        ]
+        traces = [
+            {
+                "id": "csc-001",
+                "retrieved_context": [
+                    {
+                        "source_id": "BLOG-1",
+                        "text": "Evidence",
+                        "published_at": "July 11, 2025",
+                    }
+                ],
+            }
+        ]
+        rows, summary = build_detector_inputs(catalog, traces)
+        evidence = rows[0]["evidence"][0]
+        self.assertEqual(evidence["published_at"], "2025-07-11")
+        self.assertEqual(evidence["published_at_raw"], "July 11, 2025")
+        self.assertEqual(summary["dates_normalized"], 1)
+        self.assertEqual(summary["dates_unparsed"], 0)
+        extract_features(DetectorInput.from_dict(rows[0]), datetime(2026, 1, 1, tzinfo=timezone.utc))
+
+    def test_detector_input_fails_above_declared_unparsed_date_threshold(self) -> None:
+        catalog = [{"query_id": "q1", "question": "question", "category": "multi_doc_synthesis"}]
+        traces = [{"id": "q1", "retrieved_context": [{"source_id": "BLOG-1", "published_at": "Summer 2025"}]}]
+        rows, summary = build_detector_inputs(catalog, traces, dates_unparsed_rate_max=1.0)
+        self.assertEqual(rows[0]["evidence"][0]["published_at"], "Summer 2025")
+        self.assertEqual(rows[0]["evidence"][0]["published_at_raw"], "Summer 2025")
+        self.assertEqual(summary["dates_unparsed"], 1)
+        with self.assertRaisesRegex(ValueError, "date unparsed rate"):
+            build_detector_inputs(catalog, traces, dates_unparsed_rate_max=0.0)
+
 
 class RetrievalInstrumentationTests(unittest.TestCase):
     def test_cskg_queries_sharing_anchor_produce_different_hit_lists(self) -> None:
@@ -227,10 +266,28 @@ class MetricAndRoutingTests(unittest.TestCase):
             }
             for query_id, hit, score in (("csc-001", "BLOG-B", 0.8), ("csc-002", "BLOG-C", 0.7))
         ]
-        summary = evaluate_mds_retrieval(catalog, traces, bootstrap_samples=20, feature_distinct_floor=0.0)
+        detector_inputs = [
+            {
+                "query_id": row["query_id"],
+                "question": "question",
+                "task": "multi_document_synthesis",
+                "evidence": [],
+            }
+            for row in catalog
+        ]
+        summary = evaluate_mds_retrieval(
+            catalog,
+            traces,
+            detector_inputs,
+            as_of=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            bootstrap_samples=20,
+            feature_distinct_floor=0.0,
+        )
         self.assertEqual(summary["n_queries"], 2)
         self.assertEqual(summary["n_source_clusters"], 1)
         self.assertEqual(summary["bootstrap"]["unit"], "source_cluster")
+        self.assertIn("retrieval_vector_distinctness", summary)
+        self.assertIn("detector_feature_distinctness", summary)
         metrics = summary["metrics_including_zero_hits"]["metrics"]
         self.assertEqual(metrics["precision_at_rel"]["estimate"], 0.5)
         self.assertEqual(metrics["success_at_1"]["estimate"], 1.0)
@@ -248,7 +305,14 @@ class MetricAndRoutingTests(unittest.TestCase):
                 "latency_ms": 1.0,
             }
         ]
-        summary = evaluate_mds_retrieval(catalog, traces, bootstrap_samples=20, feature_distinct_floor=0.0)
+        summary = evaluate_mds_retrieval(
+            catalog,
+            traces,
+            [{"query_id": "csc-035", "question": "question", "task": "multi_document_synthesis", "evidence": []}],
+            as_of=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            bootstrap_samples=20,
+            feature_distinct_floor=0.0,
+        )
         self.assertEqual(summary["zero_hit_queries"], ["csc-035"])
         self.assertEqual(summary["zero_hit_rate"], 1.0)
         self.assertEqual(summary["metrics_excluding_zero_hits"]["n_queries"], 0)

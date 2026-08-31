@@ -1,0 +1,71 @@
+{
+  "anchor_policy": "exploratory_first_gold_cluster_source",
+  "cskg_fusion": {
+    "anchor_weight": 0.9,
+    "question_weight": 0.1
+  },
+  "cticonnect": {
+    "actual_count": 1859,
+    "category_counts": {
+      "entity_attribution": 379,
+      "entity_linking": 1139,
+      "multi_doc_synthesis": 341
+    },
+    "manifest_count": 1859,
+    "manifest_sha256": "1c9e3577137333201640b8890221cfee11a64e0eedef4d4def9152c32ad19963",
+    "name": "CTIConnect",
+    "paper_release_count": 1860,
+    "paper_release_count_delta": -1,
+    "released": "2026-05-28",
+    "task_counts": {
+      "ata": 160,
+      "atd": 261,
+      "csc": 111,
+      "esd": 280,
+      "mla": 95,
+      "rcm": 290,
+      "tap": 135,
+      "vca": 219,
+      "wim": 308
+    },
+    "version": "v1.0.0"
+  },
+  "cticonnect_git_commit": "554797d69a51147f1f98fad7198cb2d2b183d0e9",
+  "detector_feature_distinct_floor": 0.9,
+  "elapsed_seconds": 1.3120901584625244,
+  "experiment_id": "PX-034",
+  "python": "3.9.6",
+  "result_version": "v3",
+  "retrieval_vector_distinctness": {
+    "csc": {
+      "distinct_feature_vector_rate": 0.9369369369369369,
+      "distinct_feature_vectors": 104,
+      "rows": 111
+    },
+    "mla": {
+      "distinct_feature_vector_rate": 0.9368421052631579,
+      "distinct_feature_vectors": 89,
+      "rows": 95
+    },
+    "overall": {
+      "distinct_feature_vector_rate": 0.9413489736070382,
+      "distinct_feature_vectors": 321,
+      "rows": 341
+    },
+    "tap": {
+      "distinct_feature_vector_rate": 0.9481481481481482,
+      "distinct_feature_vectors": 128,
+      "rows": 135
+    }
+  },
+  "rows": 341,
+  "started_unix": 1788198155.2538419,
+  "strategy": "cskg",
+  "tasks": [
+    "csc",
+    "mla",
+    "tap"
+  ],
+  "top_k": 10,
+  "transform_model": null
+}

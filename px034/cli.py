@@ -108,15 +108,24 @@ def make_detector_input(args: argparse.Namespace) -> None:
     release = CTIConnectRelease.load(args.cticonnect_root, verify_hashes=not args.skip_hash_check)
     catalog = release.catalog_rows()
     traces = read_jsonl(args.retrieval_traces)
-    rows, summary = build_detector_inputs(catalog, traces, release.report_index())
+    rows, summary = build_detector_inputs(
+        catalog,
+        traces,
+        release.report_index(),
+        dates_unparsed_rate_max=args.dates_unparsed_rate_max,
+    )
     write_jsonl(args.output, rows)
     write_json(args.summary, summary)
 
 
 def evaluate_mds(args: argparse.Namespace) -> None:
+    date_normalization = json.loads(args.detector_import_summary.read_text(encoding="utf-8"))
     summary = evaluate_mds_retrieval(
         read_jsonl(args.catalog),
         read_jsonl(args.retrieval_traces),
+        read_jsonl(args.detector_input),
+        as_of=datetime.fromisoformat(args.as_of),
+        date_normalization={key: value for key, value in date_normalization.items() if key.startswith("date")},
         bootstrap_samples=args.bootstrap_samples,
         seed=args.seed,
         feature_distinct_floor=args.feature_distinct_floor,
@@ -193,12 +202,12 @@ def run_retrieval(args: argparse.Namespace) -> None:
         }
         for trace in traces
     ]
-    degeneracy = feature_degeneracy(degeneracy_rows)
-    _enforce_feature_floor(degeneracy, args.feature_distinct_floor)
+    retrieval_distinctness = feature_degeneracy(degeneracy_rows)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     write_jsonl(args.output_dir / "retrieval.jsonl", traces)
     manifest = {
         "experiment_id": "PX-034",
+        "result_version": args.result_version,
         "strategy": args.strategy,
         "tasks": sorted({row["task"] for row in catalog}),
         "top_k": args.top_k,
@@ -217,8 +226,8 @@ def run_retrieval(args: argparse.Namespace) -> None:
             if args.strategy == "cskg"
             else None
         ),
-        "feature_degeneracy": degeneracy,
-        "feature_distinct_floor": args.feature_distinct_floor,
+        "retrieval_vector_distinctness": retrieval_distinctness,
+        "detector_feature_distinct_floor": args.feature_distinct_floor,
         "python": platform.python_version(),
     }
     write_json(args.output_dir / "run_manifest.json", manifest)
@@ -243,10 +252,14 @@ def build_parser() -> argparse.ArgumentParser:
     detector_input.add_argument("--output", type=Path, required=True)
     detector_input.add_argument("--summary", type=Path, required=True)
     detector_input.add_argument("--skip-hash-check", action="store_true")
+    detector_input.add_argument("--dates-unparsed-rate-max", type=float, default=0.0)
     detector_input.set_defaults(func=make_detector_input)
     evaluator = subparsers.add_parser("evaluate-mds")
     evaluator.add_argument("--catalog", type=Path, required=True)
     evaluator.add_argument("--retrieval-traces", type=Path, required=True)
+    evaluator.add_argument("--detector-input", type=Path, required=True)
+    evaluator.add_argument("--detector-import-summary", type=Path, required=True)
+    evaluator.add_argument("--as-of", required=True)
     evaluator.add_argument("--run-manifest", type=Path, required=True)
     evaluator.add_argument("--summary", type=Path, required=True)
     evaluator.add_argument("--report", type=Path, required=True)
@@ -266,6 +279,7 @@ def build_parser() -> argparse.ArgumentParser:
     retrieval.add_argument("--exploratory-first-source-anchor", action="store_true")
     retrieval.add_argument("--cskg-question-weight", type=float, default=ShippedCSKGRetriever.DEFAULT_QUESTION_WEIGHT)
     retrieval.add_argument("--feature-distinct-floor", type=float, default=0.90)
+    retrieval.add_argument("--result-version", default="unversioned")
     retrieval.add_argument("--output-dir", type=Path, required=True)
     retrieval.add_argument("--skip-hash-check", action="store_true")
     retrieval.set_defaults(func=run_retrieval)

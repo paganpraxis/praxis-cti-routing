@@ -46,6 +46,7 @@ class Evidence:
     title: str = ""
     source_type: str = "unknown"
     published_at: str | None = None
+    published_at_raw: str | None = None
     retrieved_at: str | None = None
     retrieval_score: float | None = None
     canonical_entities: tuple[str, ...] = ()
@@ -58,6 +59,7 @@ class Evidence:
             title=str(value.get("title", "")),
             source_type=str(value.get("source_type", "unknown")),
             published_at=value.get("published_at"),
+            published_at_raw=value.get("published_at_raw"),
             retrieved_at=value.get("retrieved_at"),
             retrieval_score=_optional_float(value.get("retrieval_score")),
             canonical_entities=tuple(str(x) for x in value.get("canonical_entities", [])),

@@ -11,8 +11,16 @@
   "primary_metric": "macro_f1",
   "routing_metric": "aurc",
   "feature_distinct_floor": 0.90,
-  "cskg_question_anchor_fusion": {"question_weight": 0.35, "anchor_weight": 0.65},
-  "comparison_arms": ["closed_book", "vanilla_rag", "always_domain_specific", "llm_self_prediction", "structural_router", "oracle_state"],
+  "cskg_question_anchor_fusion": {
+    "question_weight": 0.10,
+    "anchor_weight": 0.90,
+    "weight_sweep": [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+    "selection_criterion": "Choose the weight with maximum overall recall@10 among candidates whose detector-feature distinctness is at least 0.90 in every task; break exact recall ties toward the lower question weight.",
+    "selected_weight_justification": "0.10 satisfies the per-task detector-feature floor and has the highest recall@10 (0.8226) in the preregistered sweep; it also exceeds the 0.35 diagnostic row (0.7683)."
+  },
+  "dates_unparsed_rate_max": 0.0,
+  "date_format_allowlist": ["%B %d, %Y", "%b %d, %Y", "%Y-%m-%d", "%Y-%m", "%Y"],
+  "comparison_arms": ["closed_book", "vanilla_rag", "always_domain_specific", "llm_self_prediction", "structural_abstention_policy", "oracle_state"],
   "matched_coverages": [0.25, 0.5, 0.75, 1.0],
   "domain_strategy_by_task": {
     "entity_linking": "extract_then_retrieve",

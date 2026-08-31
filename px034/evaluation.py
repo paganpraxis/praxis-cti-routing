@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import random
 from collections import defaultdict
+from datetime import datetime
 from statistics import median
 from typing import Any, Callable
 
 from .metrics import feature_degeneracy
+from .features import extract_features
+from .schema import DetectorInput
 
 
 METRIC_KEYS = (
@@ -25,23 +28,35 @@ METRIC_KEYS = (
 def evaluate_mds_retrieval(
     catalog: list[dict[str, Any]],
     traces: list[dict[str, Any]],
+    detector_inputs: list[dict[str, Any]],
     *,
+    as_of: datetime,
+    date_normalization: dict[str, Any] | None = None,
     bootstrap_samples: int = 2000,
     seed: int = 34057,
     feature_distinct_floor: float = 0.90,
 ) -> dict[str, Any]:
     catalog_by_id = {str(row["query_id"]): row for row in catalog}
+    detector_by_id = {
+        str(row["query_id"]): DetectorInput.from_dict(row) for row in detector_inputs
+    }
     rows = [_evaluate_row(catalog_by_id[str(trace["id"])], trace) for trace in traces]
-    degeneracy = feature_degeneracy(
+    for row in rows:
+        row["detector_features"] = extract_features(detector_by_id[str(row["query_id"])], as_of)
+    retrieval_distinctness = feature_degeneracy(
         {
             "task": row["task"],
             "features": row["retrieval_feature_vector"],
         }
         for row in rows
     )
+    detector_distinctness = feature_degeneracy(
+        {"task": row["task"], "features": row["detector_features"]}
+        for row in rows
+    )
     failed = {
         task: values["distinct_feature_vector_rate"]
-        for task, values in degeneracy.items()
+        for task, values in detector_distinctness.items()
         if task != "overall" and float(values["distinct_feature_vector_rate"]) < feature_distinct_floor
     }
     if failed:
@@ -69,7 +84,10 @@ def evaluate_mds_retrieval(
         "runtime_errors": 0,
         "forbidden_detector_fields": [],
         "feature_distinct_floor": feature_distinct_floor,
-        "feature_degeneracy": degeneracy,
+        "retrieval_vector_distinctness": retrieval_distinctness,
+        "detector_feature_distinctness": detector_distinctness,
+        "within_cluster_feature_variation": _within_cluster_feature_variation(rows),
+        "date_normalization": date_normalization or {},
         "zero_hit_queries": zero_hit_queries,
         "zero_hit_rate": len(zero_hit_queries) / len(rows) if rows else 0.0,
         "metrics_including_zero_hits": overall["including_zero_hits"],
@@ -85,13 +103,14 @@ def render_mds_report(summary: dict[str, Any], manifest: dict[str, Any]) -> str:
         return f"{value:.4f} [{lower:.4f}, {upper:.4f}]"
 
     lines = [
-        "# PX-034 question-conditioned CTIConnect CSKG exploratory run (v2)",
+        f"# PX-034 question-conditioned CTIConnect CSKG run ({manifest.get('result_version', 'unversioned')})",
         "",
         "Status: **execution pass; exploratory retrieval result only**",
         "",
         "This run uses question-conditioned CSKG retrieval: normalized BM25 scores from question tokens "
         f"({manifest['cskg_fusion']['question_weight']:.2f}) are fused with anchor-vocabulary scores "
         f"({manifest['cskg_fusion']['anchor_weight']:.2f}). The first gold-cluster member remains an exploratory anchor, not a confirmatory input.",
+        "The weight was selected by maximizing recall@10 among sweep candidates clearing the 0.90 detector-feature distinctness floor in every task; see `weight_sweep.md`.",
         "",
         "## Execution integrity and effective sample size",
         "",
@@ -99,9 +118,13 @@ def render_mds_report(summary: dict[str, Any], manifest: dict[str, Any]) -> str:
         f"- n_source_clusters: {summary['n_source_clusters']} (CSC {summary['tasks']['csc']['n_source_clusters']}, MLA {summary['tasks']['mla']['n_source_clusters']}, TAP {summary['tasks']['tap']['n_source_clusters']})",
         f"- Confidence intervals: 95% cluster bootstrap ({summary['bootstrap']['samples']} resamples; clusters, not queries)",
         f"- Feature distinctness floor: {summary['feature_distinct_floor']:.2f}",
-        f"- Distinct retrieval feature vectors: {summary['feature_degeneracy']['overall']['distinct_feature_vectors']}/{summary['feature_degeneracy']['overall']['rows']} ({summary['feature_degeneracy']['overall']['distinct_feature_vector_rate']:.4f})",
+        f"- Distinct retrieval vectors: {summary['retrieval_vector_distinctness']['overall']['distinct_feature_vectors']}/{summary['retrieval_vector_distinctness']['overall']['rows']} ({summary['retrieval_vector_distinctness']['overall']['distinct_feature_vector_rate']:.4f})",
+        f"- Distinct detector feature vectors: {summary['detector_feature_distinctness']['overall']['distinct_feature_vectors']}/{summary['detector_feature_distinctness']['overall']['rows']} ({summary['detector_feature_distinctness']['overall']['distinct_feature_vector_rate']:.4f})",
+        f"- Fully collapsed source clusters on detector features: {summary['within_cluster_feature_variation']['fully_collapsed_clusters']}",
+        f"- Feature dimensions varying within at least one cluster: {summary['within_cluster_feature_variation']['varying_dimension_count']}/{summary['within_cluster_feature_variation']['dimension_count']}",
         f"- Runtime errors: {summary['runtime_errors']}",
         f"- Forbidden answer/gold fields: {len(summary['forbidden_detector_fields'])}",
+        f"- Date audit: ISO {summary['date_normalization'].get('dates_iso', 0)}, normalized {summary['date_normalization'].get('dates_normalized', 0)}, unparsed {summary['date_normalization'].get('dates_unparsed', 0)}, null {summary['date_normalization'].get('dates_null', 0)}; unparsed rate {summary['date_normalization'].get('dates_unparsed_rate', 0.0):.4f} (maximum {summary['date_normalization'].get('dates_unparsed_rate_max', 0.0):.4f})",
         "",
         "## Empty retrievals",
         "",
@@ -115,10 +138,10 @@ def render_mds_report(summary: dict[str, Any], manifest: dict[str, Any]) -> str:
         "| Population | n | Recall@10 | Precision@|rel| | Success@1 | Success@3 | Success@5 | Success@10 | MRR | Raw P@10 (ceiling) |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
-    for label, block in (
-        ("Including zero hits", summary["metrics_including_zero_hits"]),
-        ("Excluding zero hits", summary["metrics_excluding_zero_hits"]),
-    ):
+    metric_blocks = [("All queries", summary["metrics_including_zero_hits"])]
+    if summary["zero_hit_queries"]:
+        metric_blocks.append(("Excluding zero hits", summary["metrics_excluding_zero_hits"]))
+    for label, block in metric_blocks:
         if not block["n_queries"]:
             lines.append(f"| {label} | 0 | — | — | — | — | — | — | — | — |")
             continue
@@ -131,8 +154,10 @@ def render_mds_report(summary: dict[str, Any], manifest: dict[str, Any]) -> str:
         )
     lines.extend(["", "### Per-task integrity", "", "| Task | n_queries | n_source_clusters | distinct vectors / rows | rate | zero hits | zero-hit rate |", "|---|---:|---:|---:|---:|---:|---:|"])
     for task, block in summary["tasks"].items():
-        degeneracy = summary["feature_degeneracy"][task]
+        degeneracy = summary["detector_feature_distinctness"][task]
         lines.append(f"| {task.upper()} | {block['n_queries']} | {block['n_source_clusters']} | {degeneracy['distinct_feature_vectors']} / {degeneracy['rows']} | {degeneracy['distinct_feature_vector_rate']:.4f} | {len(block['zero_hit_queries'])} | {block['zero_hit_rate']:.4f} |")
+    if not summary["zero_hit_queries"]:
+        lines.extend(["", "Including and excluding zero hits are identical because this run has no zero-hit queries; one row is shown."])
     lines.extend(
         [
             "",
@@ -174,6 +199,32 @@ def _evaluate_row(catalog: dict[str, Any], trace: dict[str, Any]) -> dict[str, A
     for k in (1, 3, 5, 10):
         row[f"success_at_{k}"] = float(any(doc_id in gold for doc_id in hit_ids[:k]))
     return row
+
+
+def _within_cluster_feature_variation(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    grouped: dict[str, list[dict[str, float]]] = defaultdict(list)
+    for row in rows:
+        grouped[str(row["source_cluster_id"])].append(row["detector_features"])
+    dimensions = sorted(next(iter(rows))["detector_features"]) if rows else []
+    varying = [
+        dimension
+        for dimension in dimensions
+        if any(len({features[dimension] for features in cluster}) > 1 for cluster in grouped.values())
+    ]
+    multi_query_clusters = [cluster for cluster in grouped.values() if len(cluster) > 1]
+    collapsed = sum(
+        len({tuple(sorted(features.items())) for features in cluster}) == 1
+        for cluster in multi_query_clusters
+    )
+    return {
+        "source_clusters": len(grouped),
+        "multi_query_source_clusters": len(multi_query_clusters),
+        "fully_collapsed_clusters": collapsed,
+        "dimension_count": len(dimensions),
+        "varying_dimension_count": len(varying),
+        "varying_dimensions": varying,
+        "constant_within_every_cluster_dimensions": sorted(set(dimensions) - set(varying)),
+    }
 
 
 def _summarize(rows: list[dict[str, Any]], samples: int, seed: int) -> dict[str, Any]:
